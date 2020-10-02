@@ -163,6 +163,7 @@ typedef struct
 		{
 			uint32		proto_version;	/* Logical protocol version */
 			List	   *publication_names;	/* String list of publications */
+			List	   *origin_ids;		/* Oid list of origins to filter out */
 		}			logical;
 	}			proto;
 } WalRcvStreamOptions;
@@ -197,6 +198,7 @@ typedef struct WalRcvExecResult
 	char	   *err;
 	Tuplestorestate *tuplestore;
 	TupleDesc	tupledesc;
+	int			ntuples;
 } WalRcvExecResult;
 
 /* libpqwalreceiver hooks */

@@ -5818,7 +5818,8 @@ describePublications(const char *pattern)
 		if (!puballtables)
 		{
 			printfPQExpBuffer(&buf,
-							  "SELECT n.nspname, c.relname\n"
+							  "SELECT n.nspname, c.relname,\n"
+							  "  pg_get_expr(pr.prrowfilter, c.oid)\n"
 							  "FROM pg_catalog.pg_class c,\n"
 							  "     pg_catalog.pg_namespace n,\n"
 							  "     pg_catalog.pg_publication_rel pr\n"
@@ -5847,6 +5848,10 @@ describePublications(const char *pattern)
 				printfPQExpBuffer(&buf, "    \"%s.%s\"",
 								  PQgetvalue(tabres, j, 0),
 								  PQgetvalue(tabres, j, 1));
+
+				if (!PQgetisnull(tabres, j, 2))
+					appendPQExpBuffer(&buf, "  WHERE %s",
+									PQgetvalue(tabres, j, 2));
 
 				printTableAddFooter(&cont, buf.data);
 			}
@@ -5878,7 +5883,7 @@ describeSubscriptions(const char *pattern, bool verbose)
 	PGresult   *res;
 	printQueryOpt myopt = pset.popt;
 	static const bool translate_columns[] = {false, false, false, false,
-	false, false};
+	false, false, false, false};
 
 	if (pset.sversion < 100000)
 	{
@@ -5906,9 +5911,13 @@ describeSubscriptions(const char *pattern, bool verbose)
 	{
 		appendPQExpBuffer(&buf,
 						  ",  subsynccommit AS \"%s\"\n"
-						  ",  subconninfo AS \"%s\"\n",
+						  ",  subconninfo AS \"%s\"\n"
+						  ",  subroident AS \"%s\"\n"
+						  ",  subfilterorigins AS \"%s\"\n",
 						  gettext_noop("Synchronous commit"),
-						  gettext_noop("Conninfo"));
+						  gettext_noop("Conninfo"),
+						  gettext_noop("Origin ID"),
+						  gettext_noop("Filter Origins"));
 	}
 
 	/* Only display subscriptions in current database. */

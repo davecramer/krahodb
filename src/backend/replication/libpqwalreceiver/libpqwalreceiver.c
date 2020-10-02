@@ -101,6 +101,7 @@ static WalReceiverFunctionsType PQWalReceiverFunctions = {
 static PGresult *libpqrcv_PQexec(PGconn *streamConn, const char *query);
 static PGresult *libpqrcv_PQgetResult(PGconn *streamConn);
 static char *stringlist_to_identifierstr(PGconn *conn, List *strings);
+static char *oidlist_to_string(List *strlist);
 
 /*
  * Module initialization function
@@ -401,6 +402,9 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 		List	   *pubnames;
 		char	   *pubnames_literal;
 
+		List	   *originids;
+		char	   *originids_literal;
+
 		appendStringInfoString(&cmd, " (");
 
 		appendStringInfo(&cmd, "proto_version '%u'",
@@ -421,6 +425,15 @@ libpqrcv_startstreaming(WalReceiverConn *conn,
 		appendStringInfo(&cmd, ", publication_names %s", pubnames_literal);
 		PQfreemem(pubnames_literal);
 		pfree(pubnames_str);
+
+		originids = options->proto.logical.origin_ids;
+		/* parameter filter_origins is optional */
+		if (list_length(originids) > 0)
+		{
+			originids_literal = oidlist_to_string(originids);
+			appendStringInfo(&cmd, ", filter_origins '%s'", originids_literal);
+			pfree(originids_literal);
+		}
 
 		appendStringInfoChar(&cmd, ')');
 	}
@@ -878,6 +891,7 @@ libpqrcv_processTuples(PGresult *pgres, WalRcvExecResult *walres,
 				 errdetail("Expected %d fields, got %d fields.",
 						   nRetTypes, nfields)));
 
+	walres->ntuples = PQntuples(pgres);
 	walres->tuplestore = tuplestore_begin_heap(true, false, work_mem);
 
 	/* Create tuple descriptor corresponding to expected result. */
@@ -888,7 +902,7 @@ libpqrcv_processTuples(PGresult *pgres, WalRcvExecResult *walres,
 	attinmeta = TupleDescGetAttInMetadata(walres->tupledesc);
 
 	/* No point in doing more here if there were no tuples returned. */
-	if (PQntuples(pgres) == 0)
+	if (walres->ntuples == 0)
 		return;
 
 	/* Create temporary context for local allocations. */
@@ -897,7 +911,7 @@ libpqrcv_processTuples(PGresult *pgres, WalRcvExecResult *walres,
 									   ALLOCSET_DEFAULT_SIZES);
 
 	/* Process returned rows. */
-	for (tupn = 0; tupn < PQntuples(pgres); tupn++)
+	for (tupn = 0; tupn < walres->ntuples; tupn++)
 	{
 		char	   *cstrs[MaxTupleAttributeNumber];
 
@@ -1026,6 +1040,34 @@ stringlist_to_identifierstr(PGconn *conn, List *strings)
 		}
 		appendStringInfoString(&res, val_escaped);
 		PQfreemem(val_escaped);
+	}
+
+	return res.data;
+}
+
+/*
+ * Given a List of Oids, return it as a single comma separated string. The
+ * caller should free the result.
+ */
+static char *
+oidlist_to_string(List *strlist)
+{
+	ListCell	   *lc;
+	StringInfoData	res;
+	bool			first = true;
+
+	initStringInfo(&res);
+
+	foreach(lc, strlist)
+	{
+		Oid		val = lfirst_oid(lc);
+
+		if (first)
+			first = false;
+		else
+			appendStringInfoChar(&res, ',');
+
+		appendStringInfo(&res, "%u", val);
 	}
 
 	return res.data;

@@ -104,6 +104,8 @@ bool		MySubscriptionValid = false;
 
 bool		in_remote_transaction = false;
 static XLogRecPtr remote_final_lsn = InvalidXLogRecPtr;
+static XLogRecPtr remote_origin_lsn = InvalidXLogRecPtr;
+static RepOriginId remote_origin_id = InvalidRepOriginId;
 
 static void send_feedback(XLogRecPtr recvpos, bool force, bool requestReply);
 
@@ -172,8 +174,8 @@ ensure_transaction(void)
  *
  * This is based on similar code in copy.c
  */
-static EState *
-create_estate_for_relation(LogicalRepRelMapEntry *rel)
+EState *
+create_estate_for_relation(Relation rel)
 {
 	EState	   *estate;
 	ResultRelInfo *resultRelInfo;
@@ -183,13 +185,13 @@ create_estate_for_relation(LogicalRepRelMapEntry *rel)
 
 	rte = makeNode(RangeTblEntry);
 	rte->rtekind = RTE_RELATION;
-	rte->relid = RelationGetRelid(rel->localrel);
-	rte->relkind = rel->localrel->rd_rel->relkind;
+	rte->relid = RelationGetRelid(rel);
+	rte->relkind = rel->rd_rel->relkind;
 	rte->rellockmode = AccessShareLock;
 	ExecInitRangeTable(estate, list_make1(rte));
 
 	resultRelInfo = makeNode(ResultRelInfo);
-	InitResultRelInfo(resultRelInfo, rel->localrel, 1, NULL, 0);
+	InitResultRelInfo(resultRelInfo, rel, 1, NULL, 0);
 
 	estate->es_result_relations = resultRelInfo;
 	estate->es_num_result_relations = 1;
@@ -442,6 +444,9 @@ apply_handle_begin(StringInfo s)
 	logicalrep_read_begin(s, &begin_data);
 
 	remote_final_lsn = begin_data.final_lsn;
+	remote_origin_id = InvalidRepOriginId;
+
+	elog(DEBUG1, "BEGIN: remote origin: %u ; session origin: %u", remote_origin_id, replorigin_session_origin);
 
 	in_remote_transaction = true;
 
@@ -484,6 +489,8 @@ apply_handle_commit(StringInfo s)
 		maybe_reread_subscription();
 	}
 
+	elog(DEBUG1, "COMMIT: remote origin: %u ; session origin: %u", remote_origin_id, replorigin_session_origin);
+
 	in_remote_transaction = false;
 
 	/* Process any tables that are being synchronized in parallel. */
@@ -500,6 +507,8 @@ apply_handle_commit(StringInfo s)
 static void
 apply_handle_origin(StringInfo s)
 {
+	char	*origin;
+
 	/*
 	 * ORIGIN message can only come inside remote transaction and before any
 	 * actual writes.
@@ -509,6 +518,13 @@ apply_handle_origin(StringInfo s)
 		ereport(ERROR,
 				(errcode(ERRCODE_PROTOCOL_VIOLATION),
 				 errmsg("ORIGIN message sent out of order")));
+
+	ensure_transaction();
+
+	origin = logicalrep_read_origin(s, &remote_origin_lsn);
+	remote_origin_id = replorigin_by_name(origin, true);	/* XXX useful? */
+
+	elog(DEBUG1, "ORIGIN: remote origin: \"%s\" %u ; session origin: %u", origin, remote_origin_id, replorigin_session_origin);
 }
 
 /*
@@ -574,6 +590,8 @@ apply_handle_insert(StringInfo s)
 	TupleTableSlot *remoteslot;
 	MemoryContext oldctx;
 
+	elog(DEBUG1, "INSERT: remote origin: %u ; session origin: %u", remote_origin_id, replorigin_session_origin);
+
 	ensure_transaction();
 
 	relid = logicalrep_read_insert(s, &newtup);
@@ -589,7 +607,7 @@ apply_handle_insert(StringInfo s)
 	}
 
 	/* Initialize the executor state. */
-	estate = create_estate_for_relation(rel);
+	estate = create_estate_for_relation(rel->localrel);
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
@@ -677,6 +695,8 @@ apply_handle_update(StringInfo s)
 	bool		found;
 	MemoryContext oldctx;
 
+		elog(DEBUG1, "UPDATE: remote origin: %u ; session origin: %u", remote_origin_id, replorigin_session_origin);
+
 	ensure_transaction();
 
 	relid = logicalrep_read_update(s, &has_oldtup, &oldtup,
@@ -696,7 +716,7 @@ apply_handle_update(StringInfo s)
 	check_relation_updatable(rel);
 
 	/* Initialize the executor state. */
-	estate = create_estate_for_relation(rel);
+	estate = create_estate_for_relation(rel->localrel);
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
@@ -797,6 +817,8 @@ apply_handle_delete(StringInfo s)
 	bool		found;
 	MemoryContext oldctx;
 
+	elog(DEBUG1, "DELETE: remote origin: %u ; session origin: %u", remote_origin_id, replorigin_session_origin);
+
 	ensure_transaction();
 
 	relid = logicalrep_read_delete(s, &oldtup);
@@ -815,7 +837,7 @@ apply_handle_delete(StringInfo s)
 	check_relation_updatable(rel);
 
 	/* Initialize the executor state. */
-	estate = create_estate_for_relation(rel);
+	estate = create_estate_for_relation(rel->localrel);
 	remoteslot = ExecInitExtraTupleSlot(estate,
 										RelationGetDescr(rel->localrel),
 										&TTSOpsVirtual);
@@ -1691,7 +1713,12 @@ ApplyWorkerMain(Datum main_arg)
 		snprintf(originname, sizeof(originname), "pg_%u", MySubscription->oid);
 		originid = replorigin_by_name(originname, true);
 		if (!OidIsValid(originid))
-			originid = replorigin_create(originname);
+		{
+			if (OidIsValid(MySubscription->roident))
+				originid = replorigin_create(originname, MySubscription->roident);
+			else
+				originid = replorigin_create(originname, InvalidRepOriginId);
+		}
 		replorigin_session_setup(originid);
 		replorigin_session_origin = originid;
 		origin_startpos = replorigin_session_get_progress(false);
@@ -1725,6 +1752,7 @@ ApplyWorkerMain(Datum main_arg)
 	options.slotname = myslotname;
 	options.proto.logical.proto_version = LOGICALREP_PROTO_VERSION_NUM;
 	options.proto.logical.publication_names = MySubscription->publications;
+	options.proto.logical.origin_ids = MySubscription->filterorigins;
 
 	/* Start normal logical streaming replication. */
 	walrcv_startstreaming(wrconn, &options);
