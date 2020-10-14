@@ -2115,7 +2115,6 @@ ApplyWorkerMain(Datum main_arg)
 		 * does some initializations on the upstream so let's still call it.
 		 */
 		(void) walrcv_identify_system(wrconn, &startpointTLI);
-
 	}
 
 	/*
