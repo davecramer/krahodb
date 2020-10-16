@@ -573,7 +573,7 @@ OpenTableList(List *tables)
 	foreach(lc, tables)
 	{
 		PublicationTable	*t = lfirst(lc);
-		RangeVar   *rv = castNode(RangeVar, lfirst(lc));
+		RangeVar   *rv = castNode(RangeVar, t->relation);
 		bool		recurse = rv->inh;
 		Relation	rel;
 		Oid			myrelid;
@@ -598,7 +598,7 @@ OpenTableList(List *tables)
 		}
 
 		relqual = palloc(sizeof(PublicationRelationQual));
-		rels = lappend(rels, rel);			relqual->relation = rel;
+		relqual->relation = rel;
 		relqual->whereClause = t->whereClause;
 		rels = lappend(rels, relqual);
 		relids = lappend_oid(relids, myrelid);

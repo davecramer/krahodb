@@ -859,7 +859,9 @@ get_rel_sync_entry(PGOutputData *data, Oid relid)
 				if (pub->pubviaroot && am_partition)
 					publish_as_relid = llast_oid(get_partition_ancestors(relid));
 			}
-/* Cache row filters, if available */
+			
+			/* Cache row filters, if available */
+			rf_tuple = SearchSysCache2(PUBLICATIONRELMAP, ObjectIdGetDatum(relid), ObjectIdGetDatum(pub->oid));
 			if (HeapTupleIsValid(rf_tuple))
 			{
 				rf_datum = SysCacheGetAttr(PUBLICATIONRELMAP, rf_tuple, Anum_pg_publication_rel_prrowfilter, &rf_isnull);

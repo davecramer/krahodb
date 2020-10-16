@@ -691,7 +691,6 @@ fetch_remote_table_info(char *nspname, char *relname,
 	appendStringInfo(&cmd,
 					 "SELECT a.attname,"
 					 "       a.atttypid,"
-					 "       a.atttypmod,"
 					 "       a.attnum = ANY(i.indkey)"
 					 "  FROM pg_catalog.pg_attribute a"
 					 "  LEFT JOIN pg_catalog.pg_index i"
@@ -737,6 +736,9 @@ fetch_remote_table_info(char *nspname, char *relname,
 	ExecDropSingleTupleTableSlot(slot);
 
 	lrel->natts = natt;
+
+	walrcv_clear_result(res);
+
 /* Fetch row filtering info */
 	resetStringInfo(&cmd);
 	appendStringInfo(&cmd, "SELECT pg_get_expr(prrowfilter, prrelid) FROM pg_publication p INNER JOIN pg_publication_rel pr ON (p.oid = pr.prpubid) WHERE pr.prrelid = %u AND p.pubname IN (", MyLogicalRepWorker->relid);
@@ -762,7 +764,8 @@ fetch_remote_table_info(char *nspname, char *relname,
 				(errmsg("could not fetch row filter info for table \"%s.%s\" from publisher: %s",
 						nspname, relname, res->err)));
 
-	// FIXME: lrel->rowfiltercond = palloc0(res->ntuples * sizeof(char *));
+	// FIXME:DC this can't be hard coded
+	lrel->rowfiltercond = palloc0(256 * sizeof(char *));
 
 	natt = 0;
 	slot = MakeSingleTupleTableSlot(res->tupledesc, &TTSOpsMinimalTuple);
